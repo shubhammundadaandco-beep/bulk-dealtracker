@@ -1,0 +1,39 @@
+name: Daily Bulk/Block Deal Check
+
+on:
+  schedule:
+    # Runs at 15:30 UTC = 21:00 IST, after NSE/BSE typically publish
+    # end-of-day bulk/block deal reports. Adjust as needed — GitHub Actions
+    # cron is UTC, IST is UTC+5:30.
+    - cron: "30 15 * * 1-5"
+  workflow_dispatch: {}
+    # Allows manual trigger from the Actions tab for testing.
+
+jobs:
+  check-deals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tracker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
+
+      - name: Commit updated history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/history.csv
+          git diff --staged --quiet || git commit -m "Update deal history $(date -u +%Y-%m-%d)"
+          git push

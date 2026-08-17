@@ -1,0 +1,13 @@
+{
+  "_comment": "Add/remove names as you build conviction. Matching is fuzzy, so partial name variants will still match — see matcher.py MATCH_THRESHOLD.",
+  "investors": [
+    "Radhakishan Damani",
+    "Ashish Kacholia",
+    "Vijay Kedia",
+    "Mukul Mahavir Agrawal",
+    "Dolly Khanna",
+    "Sunil Singhania",
+    "Akash Bhanshali",
+    "Sanjay Dongre"
+  ]
+}
