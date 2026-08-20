@@ -20,6 +20,7 @@ from rapidfuzz import fuzz
 
 HISTORY_PATH = os.path.join("data", "history.csv")
 WATCHLIST_PATH = "watchlist.json"
+PRICE_PERF_PATH = os.path.join("data", "price_performance.csv")
 OUTPUT_DIR = "docs"
 OUTPUT_PATH = os.path.join(OUTPUT_DIR, "index.html")
 
@@ -53,6 +54,39 @@ def parse_date_iso(date_str: str) -> str:
     return date_str or ""
 
 
+def load_price_performance() -> dict:
+    """
+    Returns a dict keyed by (date, exchange, symbol, client_name, buy_sell,
+    deal_price) -> performance dict, for merging into the deals list.
+    Returns {} if price_performance.csv doesn't exist yet (feature not run).
+    """
+    if not os.path.isfile(PRICE_PERF_PATH):
+        return {}
+    index = {}
+    with open(PRICE_PERF_PATH, newline="") as f:
+        for row in csv.DictReader(f):
+            key = (
+                row.get("date", ""),
+                row.get("exchange", ""),
+                row.get("symbol", ""),
+                row.get("client_name", ""),
+                row.get("buy_sell", ""),
+                row.get("deal_price", ""),
+            )
+            index[key] = row
+    return index
+
+
+def _to_float_or_none(val):
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
+
 def match_client_to_watchlist(client_name: str, watchlist: list[str]) -> str:
     best_name, best_score = "", 0
     for watch_name in watchlist:
@@ -63,21 +97,33 @@ def match_client_to_watchlist(client_name: str, watchlist: list[str]) -> str:
 
 
 def build_deals_json(history: list[dict], watchlist: list[str]) -> list[dict]:
+    perf_index = load_price_performance()
     deals = []
     for row in history:
         client_name = row.get("client_name", "")
+        raw_date = row.get("date", "")
+        exchange = row.get("exchange", "")
+        symbol = row.get("symbol", "")
+        buy_sell = row.get("buy_sell", "")
+        price = row.get("price", "")
+
+        perf = perf_index.get((raw_date, exchange, symbol, client_name, buy_sell, price), {})
+
         deals.append({
-            "date": parse_date_iso(row.get("date", "")),
-            "date_raw": row.get("date", ""),
-            "exchange": row.get("exchange", ""),
+            "date": parse_date_iso(raw_date),
+            "date_raw": raw_date,
+            "exchange": exchange,
             "deal_type": row.get("deal_type", ""),
-            "symbol": row.get("symbol", ""),
+            "symbol": symbol,
             "security_name": row.get("security_name", ""),
             "client_name": client_name,
-            "buy_sell": row.get("buy_sell", ""),
+            "buy_sell": buy_sell,
             "quantity": row.get("quantity", ""),
-            "price": row.get("price", ""),
+            "price": price,
             "matched_investor": match_client_to_watchlist(client_name, watchlist),
+            "return_1d_pct": _to_float_or_none(perf.get("return_1d_pct")),
+            "return_1w_pct": _to_float_or_none(perf.get("return_1w_pct")),
+            "return_1m_pct": _to_float_or_none(perf.get("return_1m_pct")),
         })
     deals.sort(key=lambda d: d["date"], reverse=True)
     return deals
@@ -180,6 +226,21 @@ def render_html(deals: list[dict], watchlist: list[str]) -> str:
   </div>
 
   <div class="section">
+    <h2>Investor track record (avg. return after deal) <span class="count-pill" id="trackRecordNote"></span></h2>
+    <table>
+      <thead><tr>
+        <th data-trackcol="name">Investor <span class="arrow" id="arrow-track-name"></span></th>
+        <th data-trackcol="deals_with_data">Deals w/ price data <span class="arrow" id="arrow-track-deals_with_data"></span></th>
+        <th data-trackcol="avg_1d">Avg 1D % <span class="arrow" id="arrow-track-avg_1d"></span></th>
+        <th data-trackcol="avg_1w">Avg 1W % <span class="arrow" id="arrow-track-avg_1w"></span></th>
+        <th data-trackcol="avg_1m">Avg 1M % <span class="arrow" id="arrow-track-avg_1m"></span></th>
+        <th data-trackcol="win_rate_1w">Win rate (1W) <span class="arrow" id="arrow-track-win_rate_1w"></span></th>
+      </tr></thead>
+      <tbody id="trackRecordBody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
     <h2>Rising names (non-watchlisted, 3+ appearances in range) <span class="count-pill" id="risingCount"></span></h2>
     <table><thead><tr><th>Name</th><th>Deal count</th><th>Stocks</th></tr></thead><tbody id="risingBody"></tbody></table>
   </div>
@@ -216,6 +277,9 @@ def render_html(deals: list[dict], watchlist: list[str]) -> str:
           <th data-col="buy_sell">B/S <span class="arrow" id="arrow-buy_sell"></span></th>
           <th data-col="quantity">Qty <span class="arrow" id="arrow-quantity"></span></th>
           <th data-col="price">Price <span class="arrow" id="arrow-price"></span></th>
+          <th data-col="return_1d_pct">1D % <span class="arrow" id="arrow-return_1d_pct"></span></th>
+          <th data-col="return_1w_pct">1W % <span class="arrow" id="arrow-return_1w_pct"></span></th>
+          <th data-col="return_1m_pct">1M % <span class="arrow" id="arrow-return_1m_pct"></span></th>
         </tr></thead>
         <tbody id="dealsBody"></tbody>
       </table>
@@ -236,6 +300,8 @@ let sortCol = 'date';
 let sortDir = 'desc';
 let scripSortCol = 'total_value';
 let scripSortDir = 'desc';
+let trackSortCol = 'avg_1w';
+let trackSortDir = 'desc';
 let currentPage = 1;
 const PAGE_SIZE = 50;
 let dealsChartInstance = null;
@@ -275,13 +341,21 @@ function sortDeals(deals) {
   const dir = sortDir === 'asc' ? 1 : -1;
   return [...deals].sort((a, b) => {
     let av = a[sortCol], bv = b[sortCol];
-    if (sortCol === 'quantity' || sortCol === 'price') {
-      av = parseFloat(av) || 0; bv = parseFloat(bv) || 0;
+    if (sortCol === 'quantity' || sortCol === 'price' || sortCol.startsWith('return_')) {
+      av = (av === null || av === undefined) ? -Infinity : parseFloat(av);
+      bv = (bv === null || bv === undefined) ? -Infinity : parseFloat(bv);
     }
     if (av < bv) return -1 * dir;
     if (av > bv) return 1 * dir;
     return 0;
   });
+}
+
+function pctBadge(val) {
+  if (val === null || val === undefined || isNaN(val)) return '<span style="color:#8b93a7">-</span>';
+  const cls = val >= 0 ? 'buy' : 'sell';
+  const sign = val >= 0 ? '+' : '';
+  return '<span class="badge ' + cls + '">' + sign + val.toFixed(2) + '%</span>';
 }
 
 function populateDropdowns() {
@@ -344,6 +418,56 @@ function render() {
     '</td></tr>'
   ).join('') || '<tr><td colspan="3" class="empty">No watchlist entries.</td></tr>';
 
+  // Investor track record: average return after deal, per watchlisted investor
+  const trackRows = WATCHLIST.map(name => {
+    const investorDeals = filtered.filter(d => d.matched_investor === name);
+    const avg = (key) => {
+      const vals = investorDeals.map(d => d[key]).filter(v => v !== null && v !== undefined && !isNaN(v));
+      if (vals.length === 0) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+    const winRate1w = (() => {
+      const vals = investorDeals.map(d => d.return_1w_pct).filter(v => v !== null && v !== undefined && !isNaN(v));
+      if (vals.length === 0) return null;
+      const wins = vals.filter(v => v > 0).length;
+      return (wins / vals.length) * 100;
+    })();
+    const dealsWithData = investorDeals.filter(d =>
+      d.return_1d_pct !== null || d.return_1w_pct !== null || d.return_1m_pct !== null
+    ).length;
+    return {
+      name,
+      deals_with_data: dealsWithData,
+      avg_1d: avg('return_1d_pct'),
+      avg_1w: avg('return_1w_pct'),
+      avg_1m: avg('return_1m_pct'),
+      win_rate_1w: winRate1w,
+    };
+  });
+  const trackDir = trackSortDir === 'asc' ? 1 : -1;
+  trackRows.sort((a, b) => {
+    let av = a[trackSortCol], bv = b[trackSortCol];
+    if (trackSortCol === 'name') return av.localeCompare(bv) * trackDir;
+    av = (av === null || av === undefined) ? -Infinity : av;
+    bv = (bv === null || bv === undefined) ? -Infinity : bv;
+    return (av - bv) * trackDir;
+  });
+
+  const anyPriceData = ALL_DEALS.some(d => d.return_1d_pct !== null || d.return_1w_pct !== null || d.return_1m_pct !== null);
+  document.getElementById('trackRecordNote').textContent = anyPriceData ? '' : '(run price_tracker.py to populate)';
+  const trackBody = document.getElementById('trackRecordBody');
+  trackBody.innerHTML = trackRows.map(t =>
+    '<tr><td>' + t.name + '</td><td>' + t.deals_with_data + '</td><td>' +
+    pctBadge(t.avg_1d) + '</td><td>' + pctBadge(t.avg_1w) + '</td><td>' + pctBadge(t.avg_1m) +
+    '</td><td>' + (t.win_rate_1w === null ? '<span style="color:#8b93a7">-</span>' : t.win_rate_1w.toFixed(0) + '%') +
+    '</td></tr>'
+  ).join('') || '<tr><td colspan="6" class="empty">No watchlist entries.</td></tr>';
+
+  ['name','deals_with_data','avg_1d','avg_1w','avg_1m','win_rate_1w'].forEach(col => {
+    const el = document.getElementById('arrow-track-' + col);
+    if (el) el.textContent = (col === trackSortCol) ? (trackSortDir === 'asc' ? '\u25b2' : '\u25bc') : '';
+  });
+
   const risingBody = document.getElementById('risingBody');
   risingBody.innerHTML = rising.map(([name, deals]) => {
     const stocks = [...new Set(deals.map(d => d.symbol))].join(', ');
@@ -405,14 +529,15 @@ function render() {
     '</td><td>' + d.security_name + '</td><td>' + d.client_name +
     (d.matched_investor ? ' <span class="badge hit">watchlist</span>' : '') + '</td><td>' +
     ((d.buy_sell === 'BUY' || d.buy_sell === 'B') ? '<span class="badge buy">' + d.buy_sell + '</span>' : '<span class="badge sell">' + d.buy_sell + '</span>') +
-    '</td><td>' + Number(d.quantity).toLocaleString() + '</td><td>' + d.price + '</td></tr>'
-  ).join('') || '<tr><td colspan="9" class="empty">No deals match the current filters.</td></tr>';
+    '</td><td>' + Number(d.quantity).toLocaleString() + '</td><td>' + d.price +
+    '</td><td>' + pctBadge(d.return_1d_pct) + '</td><td>' + pctBadge(d.return_1w_pct) + '</td><td>' + pctBadge(d.return_1m_pct) + '</td></tr>'
+  ).join('') || '<tr><td colspan="12" class="empty">No deals match the current filters.</td></tr>';
 
   document.getElementById('pageInfo').textContent = 'Page ' + currentPage + ' of ' + totalPages;
   document.getElementById('prevPage').disabled = currentPage <= 1;
   document.getElementById('nextPage').disabled = currentPage >= totalPages;
 
-  ['date','exchange','deal_type','symbol','security_name','client_name','buy_sell','quantity','price'].forEach(col => {
+  ['date','exchange','deal_type','symbol','security_name','client_name','buy_sell','quantity','price','return_1d_pct','return_1w_pct','return_1m_pct'].forEach(col => {
     const el = document.getElementById('arrow-' + col);
     if (el) el.textContent = (col === sortCol) ? (sortDir === 'asc' ? '\u25b2' : '\u25bc') : '';
   });
@@ -490,6 +615,15 @@ document.querySelectorAll('th[data-scripcol]').forEach(th => {
     const col = th.dataset.scripcol;
     if (scripSortCol === col) { scripSortDir = scripSortDir === 'asc' ? 'desc' : 'asc'; }
     else { scripSortCol = col; scripSortDir = 'desc'; }
+    render();
+  });
+});
+
+document.querySelectorAll('th[data-trackcol]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.trackcol;
+    if (trackSortCol === col) { trackSortDir = trackSortDir === 'asc' ? 'desc' : 'asc'; }
+    else { trackSortCol = col; trackSortDir = 'desc'; }
     render();
   });
 });
