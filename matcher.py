@@ -24,7 +24,11 @@ def match_deal(deal: dict, watchlist: list[str]) -> dict | None:
     Returns a dict with match info if deal['client_name'] fuzzy-matches any
     watchlist name above MATCH_THRESHOLD, else None.
     """
-    client_name = (deal.get("client_name") or "").strip()
+        raw_name = deal.get("client_name")
+    if raw_name is None or (isinstance(raw_name, float) and raw_name != raw_name):
+        client_name = ""
+    else:
+        client_name = str(raw_name).strip()
     if not client_name:
         return None
 
