@@ -358,6 +358,45 @@ function pctBadge(val) {
   return '<span class="badge ' + cls + '">' + sign + val.toFixed(2) + '%</span>';
 }
 
+function groupByScripDate(deals) {
+  // Merges multiple investors buying/selling the same scrip on the same
+  // date+buy_sell into a single row, since price/return figures are
+  // identical for all of them (the move belongs to the stock, not the
+  // individual investor) -- avoids showing the same scrip/date repeated
+  // once per investor.
+  const map = {};
+  deals.forEach(d => {
+    const key = [d.date_raw, d.exchange, d.deal_type, d.symbol, d.buy_sell].join('|');
+    if (!map[key]) {
+      map[key] = {
+        date_raw: d.date_raw, date: d.date, exchange: d.exchange, deal_type: d.deal_type,
+        symbol: d.symbol, security_name: d.security_name, buy_sell: d.buy_sell,
+        clients: [], quantity: 0, price_sum: 0, price_count: 0,
+        matched_investor: '', return_1d_pct: d.return_1d_pct,
+        return_1w_pct: d.return_1w_pct, return_1m_pct: d.return_1m_pct,
+      };
+    }
+    const g = map[key];
+    if (d.client_name) g.clients.push(d.client_name);
+    g.quantity += parseFloat(d.quantity) || 0;
+    const p = parseFloat(d.price);
+    if (!isNaN(p)) { g.price_sum += p; g.price_count += 1; }
+    if (d.matched_investor && !g.matched_investor) g.matched_investor = d.matched_investor;
+  });
+  return Object.values(map).map(g => {
+    const uniqueClients = [...new Set(g.clients)];
+    return {
+      ...g,
+      client_name: uniqueClients.length > 1
+        ? (uniqueClients[0] + ' +' + (uniqueClients.length - 1) + ' more')
+        : (uniqueClients[0] || ''),
+      client_title: uniqueClients.join(', '),
+      investor_count: uniqueClients.length,
+      price: g.price_count ? (g.price_sum / g.price_count) : 0,
+    };
+  });
+}
+
 function populateDropdowns() {
   const types = [...new Set(ALL_DEALS.map(d => d.deal_type))].filter(Boolean).sort();
   const dealTypeSel = document.getElementById('dealTypeFilter');
@@ -403,7 +442,7 @@ function render() {
   document.getElementById('statValue').textContent = totalValueCr.toLocaleString(undefined, {maximumFractionDigits: 1});
   document.getElementById('statHits').textContent = hits.length;
   document.getElementById('statRising').textContent = rising.length;
-  document.getElementById('dealsCount').textContent = filtered.length + ' deals';
+  document.getElementById('dealsCount').textContent = groupByScripDate(sorted).length + ' rows (' + filtered.length + ' individual deals)';
   document.getElementById('risingCount').textContent = rising.length + ' names';
   document.getElementById('watchlistCount').textContent = WATCHLIST.length + ' tracked';
 
@@ -518,18 +557,21 @@ function render() {
     if (el) el.textContent = (col === scripSortCol) ? (scripSortDir === 'asc' ? '\u25b2' : '\u25bc') : '';
   });
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const groupedDeals = groupByScripDate(sorted);
+
+  const totalPages = Math.max(1, Math.ceil(groupedDeals.length / PAGE_SIZE));
   if (currentPage > totalPages) currentPage = totalPages;
   const start = (currentPage - 1) * PAGE_SIZE;
-  const pageDeals = sorted.slice(start, start + PAGE_SIZE);
+  const pageDeals = groupedDeals.slice(start, start + PAGE_SIZE);
 
   const dealsBody = document.getElementById('dealsBody');
   dealsBody.innerHTML = pageDeals.map(d =>
     '<tr><td>' + d.date_raw + '</td><td>' + d.exchange + '</td><td>' + d.deal_type + '</td><td>' + d.symbol +
-    '</td><td>' + d.security_name + '</td><td>' + d.client_name +
+    '</td><td>' + d.security_name + '</td><td title="' + d.client_title + '">' + d.client_name +
+    (d.investor_count > 1 ? ' <span class="badge" style="color:#8b93a7">' + d.investor_count + ' investors</span>' : '') +
     (d.matched_investor ? ' <span class="badge hit">watchlist</span>' : '') + '</td><td>' +
     ((d.buy_sell === 'BUY' || d.buy_sell === 'B') ? '<span class="badge buy">' + d.buy_sell + '</span>' : '<span class="badge sell">' + d.buy_sell + '</span>') +
-    '</td><td>' + Number(d.quantity).toLocaleString() + '</td><td>' + d.price +
+    '</td><td>' + Number(d.quantity).toLocaleString() + '</td><td>' + d.price.toFixed(2) +
     '</td><td>' + pctBadge(d.return_1d_pct) + '</td><td>' + pctBadge(d.return_1w_pct) + '</td><td>' + pctBadge(d.return_1m_pct) + '</td></tr>'
   ).join('') || '<tr><td colspan="12" class="empty">No deals match the current filters.</td></tr>';
 
