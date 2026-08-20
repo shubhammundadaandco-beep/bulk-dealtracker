@@ -59,8 +59,6 @@ def find_watchlist_hits(deals: list[dict], watchlist: list[str]) -> list[dict]:
 
 
 if __name__ == "__main__":
-    # Quick manual sanity check of the fuzzy matching logic itself
-    # (does not touch network — just tests the matching function).
     sample_watchlist = ["Ashish Kacholia", "Radhakishan Damani"]
     sample_deals = [
         {"client_name": "Kacholia Ashish D", "symbol": "TESTSTOCK"},
